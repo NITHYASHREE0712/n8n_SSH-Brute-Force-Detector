@@ -1,0 +1,291 @@
+{
+  "name": "NGP-034 SSH Brute-Force Detector",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "d4a36690-255b-4933-8c5b-0e3ea90ac435",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "const logs = [];\n\n// Generate 42 auth.log-style sample lines.\n// All IPs are documentation-only example addresses.\nconst attackers = [\n  { ip: \"192.0.2.10\", count: 12, users: [\"root\", \"admin\", \"ubuntu\", \"test\", \"oracle\", \"deploy\"] },\n  { ip: \"198.51.100.20\", count: 11, users: [\"admin\", \"guest\", \"test\", \"backup\", \"user\"] },\n  { ip: \"203.0.113.30\", count: 8, users: [\"root\"] },\n  { ip: \"203.0.113.40\", count: 4, users: [\"deploy\"] },\n  { ip: \"192.0.2.60\", count: 5, users: [\"guest\", \"test\"] },\n  { ip: \"192.0.2.70\", count: 2, users: [\"guest\"] }\n];\n\nlet id = 1000;\nlet minute = 0;\n\n// Generate failed SSH login lines.\nfor (const attacker of attackers) {\n  for (let i = 0; i < attacker.count; i++) {\n    const user = attacker.users[i % attacker.users.length];\n    const time = `10:${String(minute).padStart(2, \"0\")}:${String(i + 1).padStart(2, \"0\")}`;\n\n    logs.push(\n      `Oct 13 ${time} server sshd[${++id}]: Failed password for ${user} from ${attacker.ip} port ${41000 + id} ssh2`\n    );\n  }\n  minute++;\n}\n\n// Add two successful login lines.\n// Total: 40 failed attempts + 2 successes = 42 raw log lines.\nlogs.push(\n  \"Oct 13 10:06:01 server sshd[2001]: Accepted publickey for sysadmin from 192.0.2.50 port 45001 ssh2\"\n);\nlogs.push(\n  \"Oct 13 10:06:02 server sshd[2002]: Accepted publickey for deploy from 192.0.2.50 port 45002 ssh2\"\n);\n\n// Count failed logins per IP address.\nconst counts = {};\n\nfor (const line of logs) {\n  if (!/Failed password for /.test(line)) continue;\n\n  const match = line.match(/\\bfrom\\s+(\\d{1,3}(?:\\.\\d{1,3}){3})\\b/);\n  if (!match) continue;\n\n  const ip = match[1];\n  counts[ip] = (counts[ip] || 0) + 1;\n}\n\n// Return one summary item per IP.\n// RED: 6 or more failures.\n// ORANGE: 3–5 failures.\n// GREEN: fewer than 3 failures.\nreturn Object.entries(counts).map(([ip, failures]) => ({\n  json: {\n    tag: \"NGP-034\",\n    ip,\n    failures,\n    threshold: 6,\n    flagged: failures >= 6,\n    severity: failures >= 6\n      ? \"red\"\n      : failures >= 3\n        ? \"orange\"\n        : \"green\"\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "2d890fe4-87f9-4d7e-899f-7e2672627eb3",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nreturn $input.all().map(item => {\n  const d = item.json;\n  const parts = d.ip.split(\".\");\n\n  return {\n    json: {\n      tag: d.tag,\n      ipMasked: `${parts[0]}.${parts[1]}.${parts[2]}.xxx`,\n      failures: d.failures,\n      threshold: d.threshold,\n      flagged: d.flagged,\n      severity: d.severity\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "b0f9ca87-2f3e-4830-ba99-6d3ad45a96dc",
+      "name": "Mask IP for AI"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=\n{{ JSON.stringify($json) }}\n",
+        "options": {
+          "systemMessage": "\nYou are a cybersecurity detection analyst for NGP-034.\n\nAnalyze the masked IP and SSH failure statistics supplied to you.\n\nClassify the pattern as one of:\n- brute force\n- password spray\n- user enumeration\n- inconclusive\n\nUse the failure count and available indicators. A high failure count alone does not prove the exact attack type.\n\nIf failures >= 6, recommend block for human review. Otherwise, recommend monitor.\n\nNever reconstruct the original IP. Never claim that you have blocked an IP.\n\nReturn valid JSON with these fields:\n{\n  \"verdict\": \"brute force, password spray, user enumeration, or inconclusive\",\n  \"recommendation\": \"block or monitor\",\n  \"reason\": \"one short sentence\"\n}\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        672,
+        0
+      ],
+      "id": "126ccf34-4d9a-4dd7-afda-3ba6596e661f",
+      "name": "AI Agent",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        544,
+        208
+      ],
+      "id": "8fda382f-220e-4869-a3db-3e210942a971",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YT9S6f8QJbcnixkp",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ $json.severity === 'red' ? 0 : $json.severity === 'orange' ? 1 : 2 }}",
+        "looseTypeValidation": true
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        992,
+        -112
+      ],
+      "id": "d30662d6-c977-4566-9ff2-2f4563cd0ea1",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiItems = $input.all();\nconst sourceItems = $('Mask IP for AI').all();\n\nreturn aiItems.map((item, index) => {\n  const source = sourceItems[index]?.json ?? {};\n\n  let ai = {};\n  const raw = item.json.output;\n\n  try {\n    ai = typeof raw === 'string' ? JSON.parse(raw) : (raw ?? {});\n  } catch (e) {\n    ai = {};\n  }\n\n  return {\n    json: {\n      ...source,\n      verdict: ai.verdict ?? 'inconclusive',\n      recommendation: ai.recommendation ?? 'monitor',\n      reason: ai.reason ?? 'No valid AI reason returned',\n      severity: source.severity ?? 'green',\n    },\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        192
+      ],
+      "id": "0cfd804b-a7b5-4dc8-bc84-76e5155db5ad",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "chatId": "8031782996",
+        "text": "=🟣 NGP-034 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LL-yyyy HH:mm:ss') }} IST | RED / HIGH | SSH brute-force suspected from {{ $json.ipMasked }} — {{ $json.failures }} failures. Recommend block for human review.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1456,
+        -160
+      ],
+      "id": "eaa212f6-6ace-4e27-a40e-445de3ba0b06",
+      "name": "Send a text message",
+      "webhookId": "680ae993-c2ee-4959-ad5b-4916eabaa10f",
+      "credentials": {
+        "telegramApi": {
+          "id": "JUDYePkeJj5r4x8c",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "8031782996",
+        "text": "=🟣 NGP-034 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LL-yyyy HH:mm:ss') }} IST | ORANGE / MEDIUM | Suspicious SSH activity from {{ $json.ipMasked }} — {{ $json.failures }} failed attempts. Monitor and investigate.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1648,
+        -16
+      ],
+      "id": "53423346-f12c-490c-a828-e24bf32035c0",
+      "name": "Send a text message1",
+      "webhookId": "e141d0cc-9db3-4e91-b210-86fb61b67729",
+      "credentials": {
+        "telegramApi": {
+          "id": "JUDYePkeJj5r4x8c",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "8031782996",
+        "text": "=🟣 NGP-034 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LL-yyyy HH:mm:ss') }} IST | GREEN / LOW | SSH activity from {{ $json.ipMasked }} — {{ $json.failures }} failed attempts. Continue monitoring; no immediate block recommended.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1216,
+        0
+      ],
+      "id": "fc07e15d-b608-4f8c-a06e-b9566958fd8a",
+      "name": "Send a text message2",
+      "webhookId": "df938fe4-b1fb-42cc-af12-4438d2c624af",
+      "credentials": {
+        "telegramApi": {
+          "id": "JUDYePkeJj5r4x8c",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Mask IP for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mask IP for AI": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a text message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a text message1": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "8454dc2f-edbf-4285-af56-5e546b2c2813",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cfd2af0a2af3607e12ba6a5e07d706c41903289b0f6145834133f1deb5d0e1d9"
+  },
+  "nodeGroups": [],
+  "id": "AtgmAL23v8sKHx8Y",
+  "tags": []
+}
